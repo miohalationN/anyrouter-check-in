@@ -36,6 +36,83 @@ gunzip -f "${ARCHIVE}"
 chmod +x "mihomo-linux-amd64-${MIHOMO_VERSION}"
 MIHOMO_BIN="${PROXY_DIR}/mihomo-linux-amd64-${MIHOMO_VERSION}"
 
+echo "[INFO] Downloading subscription..."
+if ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${PROXY_DIR}/subscription_raw.yaml" "${PROXY_SUBSCRIPTION_URL}"; then
+	echo "[WARN] Failed to download subscription, skip proxy setup"
+	if [[ "${PROXY_REQUIRED}" == "true" ]]; then
+		exit 1
+	fi
+	exit 0
+fi
+
+# 过滤订阅：默认仅保留日本节点，排除免费/下载专用等无法通过目标站点 WAF 的节点；
+# 若订阅中无日本节点则回退到全部节点。纯标准库实现，无需额外依赖。
+if ! python3 - "${PROXY_DIR}/subscription_raw.yaml" "${PROXY_DIR}/subscription.yaml" <<'PY'
+import re
+import sys
+
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src, encoding='utf-8').read().splitlines()
+
+proxies_idx = next((i for i, line in enumerate(lines) if line.strip() == 'proxies:'), None)
+if proxies_idx is None:
+    print('[WARN] proxies section not found in subscription')
+    sys.exit(1)
+
+section_end = len(lines)
+for i in range(proxies_idx + 1, len(lines)):
+    if re.match(r'^[a-zA-Z_][\w-]*:', lines[i]):
+        section_end = i
+        break
+
+body = lines[proxies_idx + 1:section_end]
+exclude = ('免费', '下载专用')
+
+
+def extract_name(line):
+    m = re.match(r'^\s*-\s*\{name:\s*(?:"([^"]*)"|([^,}]+))', line)
+    return (m.group(1) or m.group(2)).strip() if m else ''
+
+
+kept = []
+total = 0
+i = 0
+while i < len(body):
+    line = body[i]
+    if re.match(r'^\s*-\s*\{name:', line):
+        total += 1
+        name = extract_name(line)
+        if '日本' in name and not any(k in name for k in exclude):
+            kept.append(line)
+        i += 1
+    elif re.match(r'^\s*-\s*name:', line):
+        block = [line]
+        i += 1
+        while i < len(body) and body[i] and not re.match(r'^\s*-\s', body[i]):
+            block.append(body[i])
+            i += 1
+        total += 1
+        m = re.search(r'name:\s*["\']?([^"\']+)', block[0])
+        name = m.group(1).strip() if m else ''
+        if '日本' in name and not any(k in name for k in exclude):
+            kept.extend(block)
+    else:
+        kept.append(line)
+        i += 1
+
+selected = kept if kept else body
+with open(dst, 'w', encoding='utf-8') as f:
+    f.write('\n'.join(lines[:proxies_idx + 1] + selected + lines[section_end:]) + '\n')
+print(f'[INFO] Proxy nodes: kept {len(selected)}/{len(body)} (Japan: {sum(1 for l in selected if "日本" in extract_name(l))})')
+PY
+then
+	echo "[WARN] Failed to filter subscription, skip proxy setup"
+	if [[ "${PROXY_REQUIRED}" == "true" ]]; then
+		exit 1
+	fi
+	exit 0
+fi
+
 cat > config.yaml <<EOF
 mixed-port: ${PROXY_PORT}
 allow-lan: false
@@ -46,10 +123,8 @@ unified-delay: true
 
 proxy-providers:
   subscription:
-    type: http
-    url: "${PROXY_SUBSCRIPTION_URL}"
-    interval: 3600
-    path: ./subscription.yaml
+    type: file
+    path: ${PROXY_DIR}/subscription.yaml
     health-check:
       enable: true
       interval: 300
