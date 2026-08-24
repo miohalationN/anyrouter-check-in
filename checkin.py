@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime
 
 if hasattr(sys.stdout, 'reconfigure'):
@@ -235,25 +236,36 @@ async def login_with_credentials(
 
 
 def get_user_info(client, headers, user_info_url: str):
-	"""获取用户信息"""
-	try:
-		response = client.get(user_info_url, headers=headers, timeout=30)
+	"""获取用户信息（网络/SSL 错误会抛出异常，由上层重试处理）"""
+	response = client.get(user_info_url, headers=headers, timeout=30)
 
-		if response.status_code == 200:
-			data = response.json()
-			if data.get('success'):
-				user_data = data.get('data', {})
-				quota = round(user_data.get('quota', 0) / 500000, 2)
-				used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
-				return {
-					'success': True,
-					'quota': quota,
-					'used_quota': used_quota,
-					'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
-				}
-		return {'success': False, 'error': f'Failed to get user info: HTTP {response.status_code}'}
-	except Exception as e:
-		return {'success': False, 'error': f'Failed to get user info: {str(e)[:50]}...'}
+	if response.status_code == 200:
+		data = response.json()
+		if data.get('success'):
+			user_data = data.get('data', {})
+			quota = round(user_data.get('quota', 0) / 500000, 2)
+			used_quota = round(user_data.get('used_quota', 0) / 500000, 2)
+			return {
+				'success': True,
+				'quota': quota,
+				'used_quota': used_quota,
+				'display': f':money: Current balance: ${quota}, Used: ${used_quota}',
+			}
+	return {'success': False, 'error': f'Failed to get user info: HTTP {response.status_code}'}
+
+
+def _request_with_retry(func, *args, attempts: int = 3, base_delay: float = 2.0, **kwargs):
+	"""对可能因网络抖动失败的请求做重试（如 SSL 连接被对端中断）。"""
+	last_exc = None
+	for attempt in range(1, attempts + 1):
+		try:
+			return func(*args, **kwargs)
+		except Exception as exc:
+			last_exc = exc
+			if attempt < attempts:
+				print(f'[RETRY] Request attempt {attempt}/{attempts} failed ({str(exc)[:50]}...), retrying...')
+				time.sleep(base_delay * attempt)
+	raise last_exc
 
 
 async def prepare_cookies(account_name: str, provider_config, user_cookies: dict) -> dict | None:
@@ -449,18 +461,18 @@ def run_check_in_requests(
 				headers[provider_config.api_user_key] = api_user
 
 			user_info_url = f'{provider_config.domain}{provider_config.user_info_path}'
-			user_info_before = get_user_info(client, headers, user_info_url)
+			user_info_before = _request_with_retry(get_user_info, client, headers, user_info_url)
 			if user_info_before and user_info_before.get('success'):
 				print(user_info_before['display'])
 			elif user_info_before:
 				print(user_info_before.get('error', 'Unknown error'))
 
 			if provider_config.needs_manual_check_in():
-				success = execute_check_in(client, account_name, provider_config, headers)
-				user_info_after = get_user_info(client, headers, user_info_url)
+				success = _request_with_retry(execute_check_in, client, account_name, provider_config, headers)
+				user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
 				return success, user_info_before, user_info_after
 
-			user_info_after = get_user_info(client, headers, user_info_url)
+			user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
 			if user_info_after and user_info_after.get('success'):
 				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
 				return True, user_info_before, user_info_after
