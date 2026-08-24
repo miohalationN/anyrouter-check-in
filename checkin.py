@@ -43,6 +43,7 @@ from utils.proxy import get_playwright_proxy, get_proxy_server
 load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
+CHECKIN_DONE_FILE = 'checkin_done.txt'
 
 
 def load_balance_hash():
@@ -63,6 +64,26 @@ def save_balance_hash(balance_hash):
 			f.write(balance_hash)
 	except Exception as e:
 		print(f'Warning: Failed to save balance hash: {e}')
+
+
+def load_checkin_done_date():
+	"""加载当天已成功签到的标记日期"""
+	try:
+		if os.path.exists(CHECKIN_DONE_FILE):
+			with open(CHECKIN_DONE_FILE, 'r', encoding='utf-8') as f:
+				return f.read().strip()
+	except Exception:  # nosec B110
+		pass
+	return None
+
+
+def save_checkin_done_date(date_str):
+	"""记录当天已成功签到"""
+	try:
+		with open(CHECKIN_DONE_FILE, 'w', encoding='utf-8') as f:
+			f.write(date_str)
+	except Exception as e:
+		print(f'Warning: Failed to save check-in done marker: {e}')
 
 
 def generate_balance_hash(balances):
@@ -522,6 +543,11 @@ async def main():
 
 	print(f'[INFO] Found {len(accounts)} account configurations')
 
+	today_str = datetime.now().strftime('%Y-%m-%d')
+	if load_checkin_done_date() == today_str:
+		print(f'[INFO] Today ({today_str}) check-in already completed successfully, skipping this run')
+		sys.exit(0)
+
 	last_balance_hash = load_balance_hash()
 
 	success_count = 0
@@ -621,6 +647,10 @@ async def main():
 
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
+
+	if total_count > 0 and success_count == total_count:
+		save_checkin_done_date(today_str)
+		print(f'[INFO] All accounts check-in successful, marked as done for today ({today_str})')
 
 	if need_notify and notification_content:
 		summary = [
