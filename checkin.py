@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import os
+import random
 import sys
 import time
 from datetime import datetime
@@ -533,16 +534,19 @@ async def main():
 
 	for i, account in enumerate(accounts):
 		account_key = f'account_{i + 1}'
+		if i > 0:
+			delay = random.uniform(30, 120)
+			print(f'[INFO] Waiting {delay:.0f}s before next account (desync anti-detection)...')
+			await asyncio.sleep(delay)
 		try:
 			success, user_info_before, user_info_after = await check_in_account(account, i, app_config)
 			if success:
 				success_count += 1
 
-			should_notify_this_account = False
+			should_notify_this_account = True
+			need_notify = True
 
 			if not success:
-				should_notify_this_account = True
-				need_notify = True
 				account_name = account.get_display_name(i)
 				print(f'[NOTIFY] {account_name} failed, will send notification')
 
@@ -649,7 +653,7 @@ async def main():
 
 		print(notify_content)
 		notify.push_message('AnyRouter Check-in Alert', notify_content, msg_type='text')
-		print('[NOTIFY] Notification sent due to failures or balance changes')
+		print('[NOTIFY] Check-in result notification sent')
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
 
