@@ -22,19 +22,26 @@ PROXY_REQUIRED="${PROXY_REQUIRED:-false}"
 mkdir -p "${PROXY_DIR}"
 cd "${PROXY_DIR}"
 
-echo "[INFO] Downloading mihomo ${MIHOMO_VERSION}..."
-ARCHIVE="mihomo-linux-amd64-${MIHOMO_VERSION}.gz"
-if ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${ARCHIVE}" \
-	"https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/${ARCHIVE}"; then
-	echo "[WARN] Failed to download mihomo ${MIHOMO_VERSION}, skip proxy setup"
-	if [[ "${PROXY_REQUIRED}" == "true" ]]; then
-		exit 1
-	fi
-	exit 0
-fi
-gunzip -f "${ARCHIVE}"
-chmod +x "mihomo-linux-amd64-${MIHOMO_VERSION}"
 MIHOMO_BIN="${PROXY_DIR}/mihomo-linux-amd64-${MIHOMO_VERSION}"
+if [[ ! -x "${MIHOMO_BIN}" ]]; then
+	echo "[INFO] Downloading mihomo ${MIHOMO_VERSION}..."
+	ARCHIVE="mihomo-linux-amd64-${MIHOMO_VERSION}.gz"
+	MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/${ARCHIVE}"
+	if ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${ARCHIVE}" "${MIHOMO_URL}"; then
+		echo "[INFO] Primary download failed, trying mirror..."
+		if ! curl --retry 2 --retry-delay 5 -fsSL -o "${ARCHIVE}" "https://ghfast.top/${MIHOMO_URL}"; then
+			echo "[WARN] Failed to download mihomo ${MIHOMO_VERSION}, skip proxy setup"
+			if [[ "${PROXY_REQUIRED}" == "true" ]]; then
+				exit 1
+			fi
+			exit 0
+		fi
+	fi
+	gunzip -f "${ARCHIVE}"
+	chmod +x "mihomo-linux-amd64-${MIHOMO_VERSION}"
+else
+	echo "[INFO] mihomo ${MIHOMO_VERSION} already present, skipping download"
+fi
 
 echo "[INFO] Downloading subscription..."
 if ! curl --retry 3 --retry-delay 5 --retry-all-errors -fsSL -o "${PROXY_DIR}/subscription_raw.yaml" "${PROXY_SUBSCRIPTION_URL}"; then
