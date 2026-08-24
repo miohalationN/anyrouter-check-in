@@ -240,7 +240,13 @@ def get_user_info(client, headers, user_info_url: str):
 	response = client.get(user_info_url, headers=headers, timeout=30)
 
 	if response.status_code == 200:
-		data = response.json()
+		try:
+			data = response.json()
+		except Exception:
+			content_type = response.headers.get('content-type', 'unknown')
+			snippet = response.text[:150].replace('\n', ' ').replace('\r', ' ')
+			print(f'[DEBUG] User info HTTP 200 but non-JSON (content-type: {content_type}): {snippet}')
+			raise RuntimeError(f'user info returned non-JSON (HTTP 200, {content_type})')
 		if data.get('success'):
 			user_data = data.get('data', {})
 			quota = round(user_data.get('quota', 0) / 500000, 2)
