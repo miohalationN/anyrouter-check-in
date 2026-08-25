@@ -21,6 +21,9 @@ import httpx
 from cloakbrowser import launch_async
 from dotenv import load_dotenv
 
+# 必须先加载 .env：utils.notify 在导入时就会读取环境变量（PUSHPLUS_TOKEN 等）
+load_dotenv()
+
 from utils.browser import (
 	BrowserLoginResult,
 	has_session_cookie,
@@ -39,8 +42,6 @@ from utils.config import AccountConfig, AppConfig, load_accounts_config
 from utils.debug import debug_print, is_debug_enabled
 from utils.notify import notify
 from utils.proxy import get_playwright_proxy, get_proxy_server
-
-load_dotenv()
 
 BALANCE_HASH_FILE = 'balance_hash.txt'
 CHECKIN_DONE_FILE = 'checkin_done.txt'
