@@ -98,7 +98,7 @@ class AppConfig:
 				name='agentrouter',
 				domain='https://agentrouter.org',
 				login_path='/login',
-				sign_in_path=None,  # 无需签到接口，查询用户信息时自动完成签到
+				sign_in_path=None,  # 无独立签到接口：每日奖励在"登录"时发放，需账号配置 password
 				user_info_path='/api/user/self',
 				api_user_key='new-api-user',
 				bypass_method='waf_cookies',
@@ -155,6 +155,7 @@ class AccountConfig:
 	name: str | None = None
 	email: str | None = None
 	password: str | None = None
+	login_username: str | None = None
 
 	@classmethod
 	def from_dict(cls, data: dict, index: int) -> 'AccountConfig':
@@ -169,11 +170,20 @@ class AccountConfig:
 			name=name if name else None,
 			email=data.get('email'),
 			password=data.get('password'),
+			login_username=data.get('login_username'),
 		)
 
 	def has_login_credentials(self) -> bool:
 		"""是否配置了邮箱密码登录"""
 		return bool(self.email and self.password)
+
+	def has_api_login_credentials(self) -> bool:
+		"""是否配置了 API 密码登录（用户名或邮箱 + 密码）"""
+		return bool((self.login_username or self.email) and self.password)
+
+	def get_login_username(self) -> str | None:
+		"""API 登录使用的用户名（站点用户名优先于邮箱）"""
+		return self.login_username or self.email
 
 	def get_display_name(self, index: int) -> str:
 		"""获取显示名称"""

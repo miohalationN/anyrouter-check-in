@@ -258,6 +258,51 @@ async def login_with_credentials(
 		return None
 
 
+def api_login(client, provider_config, account_name: str, username: str, password: str) -> bool | None:
+	"""通过 API 密码登录触发每日奖励。
+
+	agentrouter 等站点的每日签到奖励在"登录成功"时发放（登录响应携带 checked_in 标志），
+	仅凭 session cookie 请求用户信息不会触发奖励。
+
+	返回 True 表示本次登录触发了签到奖励；False 表示登录成功但今日已领过；None 表示登录失败。
+	"""
+	login_url = f'{provider_config.domain}/api/user/login'
+	try:
+		response = client.post(
+			login_url,
+			json={'username': username, 'password': password},
+			headers={'Referer': f'{provider_config.domain}/login', 'Origin': provider_config.domain},
+			timeout=30,
+		)
+	except Exception as e:
+		print(f'[FAILED] {account_name}: Login request error - {str(e)[:80]}')
+		return None
+
+	if response.status_code != 200:
+		print(f'[FAILED] {account_name}: Login HTTP {response.status_code}')
+		return None
+
+	try:
+		result = response.json()
+	except Exception:
+		print(f'[FAILED] {account_name}: Login returned non-JSON response')
+		return None
+
+	if not result.get('success'):
+		msg = result.get('message', 'Unknown error')
+		print(f'[FAILED] {account_name}: Login rejected - {msg}')
+		return None
+
+	user_data = result.get('data') or {}
+	checked_in = bool(user_data.get('checked_in'))
+	# 登录成功后 httpx 会自动用 Set-Cookie 刷新会话，后续请求使用新 session
+	if checked_in:
+		print(f'[SUCCESS] {account_name}: Login triggered daily check-in (checked_in=true)')
+	else:
+		print(f'[INFO] {account_name}: Login OK, already checked in today (checked_in=false)')
+	return checked_in
+
+
 def get_user_info(client, headers, user_info_url: str):
 	"""获取用户信息（网络/SSL 错误会抛出异常，由上层重试处理）"""
 	response = client.get(user_info_url, headers=headers, timeout=30)
@@ -497,10 +542,42 @@ def run_check_in_requests(
 				user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
 				return success, user_info_before, user_info_after
 
+			# 自动奖励型 provider（如 agentrouter）：每日奖励在"登录"时发放
+			if account.has_api_login_credentials():
+				login_status = _request_with_retry(
+					api_login,
+					client,
+					provider_config,
+					account_name,
+					account.get_login_username(),
+					account.password,
+				)
+				user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
+				if login_status is None:
+					error = user_info_after.get('error', 'login failed') if user_info_after else 'login failed'
+					print(f'[FAILED] {account_name}: Login-based check-in failed - {error}')
+					return False, user_info_before, user_info_after
+				# login_status True=本次触发奖励 / False=今日已领过，均视为成功
+				return True, user_info_before, user_info_after
+
+			# 未配置密码：无法触发登录，只能凭余额增量判断奖励是否真的到账
+			print(
+				f'[WARN] {account_name}: No login password configured - '
+				f'this provider grants daily credit only at LOGIN; reward will NOT be credited without it'
+			)
 			user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
 			if user_info_after and user_info_after.get('success'):
-				print(f'[INFO] {account_name}: Check-in completed automatically (triggered by user info request)')
-				return True, user_info_before, user_info_after
+				if (
+					user_info_before
+					and user_info_before.get('success')
+					and (user_info_after['quota'] + user_info_after['used_quota'])
+					- (user_info_before['quota'] + user_info_before['used_quota'])
+					> 0
+				):
+					print(f'[SUCCESS] {account_name}: Balance grew during check-in (reward credited elsewhere)')
+					return True, user_info_before, user_info_after
+				print(f'[FAILED] {account_name}: No reward credited - configure "password" for this account')
+				return False, user_info_before, user_info_after
 			error = user_info_after.get('error', 'Unknown error') if user_info_after else 'Unknown error'
 			print(f'[FAILED] {account_name}: Auto check-in failed - {error}')
 			return False, user_info_before, user_info_after
