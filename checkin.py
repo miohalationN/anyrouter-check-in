@@ -300,6 +300,33 @@ def api_login(client, provider_config, account_name: str, username: str, passwor
 	return True
 
 
+def get_today_checkin_log(client, provider_config, account_name: str) -> str | None:
+	"""查询使用日志中今天的签到记录（权威到账凭证），返回日志原文或 None。
+
+	站点在每日首次登录发放奖励时会写入一条 type=4 日志，
+	内容形如 "每日签到成功，增加额度 ＄25.000000 额度"。
+	"""
+	today_start = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
+	url = (
+		f'{provider_config.domain}/api/log/self/'
+		f'?p=1&page_size=100&type=0&start_timestamp={today_start}&end_timestamp={int(time.time()) + 300}'
+	)
+	try:
+		response = client.get(url, headers={'Referer': f'{provider_config.domain}/console'}, timeout=30)
+		if response.status_code != 200:
+			print(f'[WARN] {account_name}: Log query HTTP {response.status_code}')
+			return None
+		data = response.json().get('data')
+		items = data.get('items', []) if isinstance(data, dict) else (data or [])
+		for item in items:
+			content = str(item.get('content', ''))
+			if '签到' in content and '成功' in content and int(item.get('created_at', 0)) >= today_start:
+				return content
+	except Exception as e:
+		print(f'[WARN] {account_name}: Log query error - {str(e)[:60]}')
+	return None
+
+
 def get_user_info(client, headers, user_info_url: str):
 	"""获取用户信息（网络/SSL 错误会抛出异常，由上层重试处理）"""
 	response = client.get(user_info_url, headers=headers, timeout=30)
@@ -412,6 +439,10 @@ def format_check_in_notification(detail: dict) -> str:
 		f'签到前余额: <b>${detail["before_quota"]:.2f}</b> ｜ 累计消耗: ${detail["before_used"]:.2f}<br>',
 		f'签到后余额: <b>${detail["after_quota"]:.2f}</b> ｜ 累计消耗: ${detail["after_used"]:.2f}<br>',
 	]
+
+	log_line = detail.get('checkin_log')
+	if log_line:
+		lines.append(f'<font color="#4caf50">日志确认: {log_line}</font><br>')
 
 	if has_reward or has_usage or balance_change != 0:
 		lines.append(f'{sep}<br>')
@@ -554,16 +585,33 @@ def run_check_in_requests(
 					error = user_info_after.get('error', 'login failed') if user_info_after else 'login failed'
 					print(f'[FAILED] {account_name}: Login-based check-in failed - {error}')
 					return False, user_info_before, user_info_after
-				# 登录成功即视为今日签到完成；是否到账看通知里的余额增量
-				# （当天已在别处登录过时增量为 0，属正常）
-				return True, user_info_before, user_info_after
 
-			# 未配置密码：无法触发登录，只能凭余额增量判断奖励是否真的到账
+				# 用使用日志确认今日奖励确实入账（余额增量可能被并发消耗抵消）
+				log_content = get_today_checkin_log(client, provider_config, account_name)
+				if log_content is None:
+					time.sleep(3)
+					log_content = get_today_checkin_log(client, provider_config, account_name)
+				if log_content:
+					print(f'[SUCCESS] {account_name}: 日志确认入账 - {log_content}')
+					if user_info_after and user_info_after.get('success'):
+						user_info_after['checkin_log'] = log_content
+					return True, user_info_before, user_info_after
+
+				print(f'[FAILED] {account_name}: 登录成功但使用日志未发现今日签到记录，奖励可能未发放')
+				return False, user_info_before, user_info_after
+
+			# 未配置密码：无法主动登录，只能凭日志/余额增量判断奖励是否已在别处入账
 			print(
 				f'[WARN] {account_name}: No login password configured - '
 				f'this provider grants daily credit only at LOGIN; reward will NOT be credited without it'
 			)
 			user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
+			log_content = get_today_checkin_log(client, provider_config, account_name)
+			if log_content:
+				print(f'[SUCCESS] {account_name}: 日志显示今日奖励已在别处入账 - {log_content}')
+				if user_info_after and user_info_after.get('success'):
+					user_info_after['checkin_log'] = log_content
+				return True, user_info_before, user_info_after
 			if user_info_after and user_info_after.get('success'):
 				if (
 					user_info_before
@@ -675,6 +723,7 @@ async def main():
 						'check_in_reward': check_in_reward,
 						'usage_increase': usage_increase,
 						'balance_change': balance_change,
+						'checkin_log': user_info_after.get('checkin_log'),
 						'success': success,
 					}
 
