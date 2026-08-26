@@ -768,11 +768,11 @@ async def main():
 		else:
 			print('[INFO] No balance changes detected')
 
-	if balance_changed:
-		for i, account in enumerate(accounts):
-			account_key = f'account_{i + 1}'
-			if account_key in account_check_in_details:
-				account_notify_blocks[account_key] = format_check_in_notification(account_check_in_details[account_key])
+	# 详细格式（含签到前后对比与日志确认）始终优先，不再仅在余额变化时使用
+	for i, account in enumerate(accounts):
+		account_key = f'account_{i + 1}'
+		if account_key in account_check_in_details:
+			account_notify_blocks[account_key] = format_check_in_notification(account_check_in_details[account_key])
 
 	if current_balance_hash:
 		save_balance_hash(current_balance_hash)
