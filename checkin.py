@@ -17,7 +17,13 @@ if hasattr(sys.stdout, 'reconfigure'):
 if hasattr(sys.stderr, 'reconfigure'):
 	sys.stderr.reconfigure(line_buffering=True)
 
-import httpx
+from urllib.parse import urlparse
+
+try:
+	from curl_cffi.requests import Session
+except ImportError:  # pragma: no cover
+	print('WARNING: curl_cffi not installed - WAF JS challenge may intermittently block requests')
+	raise
 from cloakbrowser import launch_async
 from dotenv import load_dotenv
 
@@ -318,7 +324,6 @@ def get_today_checkin_log(client, provider_config, account_name: str, headers: d
 			url,
 			headers=log_headers,
 			timeout=30,
-			follow_redirects=True,
 		)
 		if response.status_code != 200:
 			print(f'[WARN] {account_name}: Log query HTTP {response.status_code}')
@@ -532,12 +537,10 @@ def run_check_in_requests(
 	api_user_override: str | None = None,
 	use_proxy: bool = False,
 ) -> tuple[bool, dict | None, dict | None]:
-	"""执行 HTTP 签到请求（同步，避免在 async 上下文中使用阻塞 httpx）。"""
+	"""执行 HTTP 签到请求（同步，避免在 async 上下文中使用阻塞请求）。"""
 	try:
-		client_kwargs: dict = {'http2': False, 'timeout': 30.0}
 		proxy_url = get_proxy_server(use_proxy=use_proxy)
 		if proxy_url:
-			client_kwargs['proxy'] = proxy_url
 			if is_debug_enabled():
 				print(f'[INFO] {account_name}: HTTP client proxy enabled: {proxy_url}')
 			else:
@@ -545,8 +548,15 @@ def run_check_in_requests(
 		elif use_proxy:
 			print(f'[WARN] {account_name}: Provider requires proxy but CHECKIN_PROXY_URL is not set')
 
-		with httpx.Client(**client_kwargs) as client:
-			client.cookies.update(all_cookies)
+		session_conf: dict = {'impersonate': 'chrome138', 'http_version': 1, 'timeout': 30.0}
+		if proxy_url:
+			session_conf['proxies'] = {'http': proxy_url, 'https': proxy_url}
+		# curl_cffi 以 Chrome 的 TLS/JA3 指纹发起请求，避免阿里云 WAF
+		# 对非浏览器指纹（httpx/OpenSSL）的 JS 质询随出口节点轮换而时灵时不灵
+		with Session(**session_conf) as client:
+			cookie_domain = urlparse(provider_config.domain).hostname
+			for cname, cvalue in all_cookies.items():
+				client.cookies.set(cname, cvalue, domain=cookie_domain)
 
 			headers = {
 				'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36',
