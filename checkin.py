@@ -308,11 +308,16 @@ def get_today_checkin_log(client, provider_config, account_name: str) -> str | N
 	"""
 	today_start = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
 	url = (
-		f'{provider_config.domain}/api/log/self/'
+		f'{provider_config.domain}/api/log/self'
 		f'?p=1&page_size=100&type=0&start_timestamp={today_start}&end_timestamp={int(time.time()) + 300}'
 	)
 	try:
-		response = client.get(url, headers={'Referer': f'{provider_config.domain}/console'}, timeout=30)
+		response = client.get(
+			url,
+			headers={'Referer': f'{provider_config.domain}/console'},
+			timeout=30,
+			follow_redirects=True,
+		)
 		if response.status_code != 200:
 			print(f'[WARN] {account_name}: Log query HTTP {response.status_code}')
 			return None
