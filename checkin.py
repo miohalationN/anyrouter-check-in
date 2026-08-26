@@ -300,7 +300,7 @@ def api_login(client, provider_config, account_name: str, username: str, passwor
 	return True
 
 
-def get_today_checkin_log(client, provider_config, account_name: str) -> str | None:
+def get_today_checkin_log(client, provider_config, account_name: str, headers: dict) -> str | None:
 	"""查询使用日志中今天的签到记录（权威到账凭证），返回日志原文或 None。
 
 	站点在每日首次登录发放奖励时会写入一条 type=4 日志，
@@ -312,9 +312,11 @@ def get_today_checkin_log(client, provider_config, account_name: str) -> str | N
 		f'?p=1&page_size=100&type=0&start_timestamp={today_start}&end_timestamp={int(time.time()) + 300}'
 	)
 	try:
+		log_headers = dict(headers)
+		log_headers['Referer'] = f'{provider_config.domain}/console'
 		response = client.get(
 			url,
-			headers={'Referer': f'{provider_config.domain}/console'},
+			headers=log_headers,
 			timeout=30,
 			follow_redirects=True,
 		)
@@ -592,10 +594,10 @@ def run_check_in_requests(
 					return False, user_info_before, user_info_after
 
 				# 用使用日志确认今日奖励确实入账（余额增量可能被并发消耗抵消）
-				log_content = get_today_checkin_log(client, provider_config, account_name)
+				log_content = get_today_checkin_log(client, provider_config, account_name, headers)
 				if log_content is None:
 					time.sleep(3)
-					log_content = get_today_checkin_log(client, provider_config, account_name)
+					log_content = get_today_checkin_log(client, provider_config, account_name, headers)
 				if log_content:
 					print(f'[SUCCESS] {account_name}: 日志确认入账 - {log_content}')
 					if user_info_after and user_info_after.get('success'):
@@ -611,7 +613,7 @@ def run_check_in_requests(
 				f'this provider grants daily credit only at LOGIN; reward will NOT be credited without it'
 			)
 			user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
-			log_content = get_today_checkin_log(client, provider_config, account_name)
+			log_content = get_today_checkin_log(client, provider_config, account_name, headers)
 			if log_content:
 				print(f'[SUCCESS] {account_name}: 日志显示今日奖励已在别处入账 - {log_content}')
 				if user_info_after and user_info_after.get('success'):
