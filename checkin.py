@@ -548,7 +548,7 @@ def run_check_in_requests(
 		elif use_proxy:
 			print(f'[WARN] {account_name}: Provider requires proxy but CHECKIN_PROXY_URL is not set')
 
-		session_conf: dict = {'impersonate': 'chrome138', 'http_version': 1, 'timeout': 30.0}
+		session_conf: dict = {'impersonate': 'chrome146', 'http_version': 1, 'timeout': 30.0}
 		if proxy_url:
 			session_conf['proxies'] = {'http': proxy_url, 'https': proxy_url}
 		# curl_cffi 以 Chrome 的 TLS/JA3 指纹发起请求，避免阿里云 WAF
