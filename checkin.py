@@ -261,10 +261,11 @@ async def login_with_credentials(
 def api_login(client, provider_config, account_name: str, username: str, password: str) -> bool | None:
 	"""通过 API 密码登录触发每日奖励。
 
-	agentrouter 等站点的每日签到奖励在"登录成功"时发放（登录响应携带 checked_in 标志），
-	仅凭 session cookie 请求用户信息不会触发奖励。
+	agentrouter 等站点的每日签到奖励在"登录成功"时发放：每天第一次登录到账，
+	之后的登录接口仍会返回 checked_in=true，但不再加钱（该标志不可作为到账依据）。
+	仅凭 session cookie 请求用户信息永远不会触发登录事件。
 
-	返回 True 表示本次登录触发了签到奖励；False 表示登录成功但今日已领过；None 表示登录失败。
+	返回 True 表示登录成功（当日首次则奖励已到账）；None 表示登录失败。
 	"""
 	login_url = f'{provider_config.domain}/api/user/login'
 	try:
@@ -294,13 +295,9 @@ def api_login(client, provider_config, account_name: str, username: str, passwor
 		return None
 
 	user_data = result.get('data') or {}
-	checked_in = bool(user_data.get('checked_in'))
-	# 登录成功后 httpx 会自动用 Set-Cookie 刷新会话，后续请求使用新 session
-	if checked_in:
-		print(f'[SUCCESS] {account_name}: Login triggered daily check-in (checked_in=true)')
-	else:
-		print(f'[INFO] {account_name}: Login OK, already checked in today (checked_in=false)')
-	return checked_in
+	# httpx 自动用 Set-Cookie 刷新会话，后续请求使用新 session
+	print(f"[SUCCESS] {account_name}: Login OK (checked_in flag={user_data.get('checked_in')}, 奖励是否到账以余额增量为准)")
+	return True
 
 
 def get_user_info(client, headers, user_info_url: str):
@@ -542,7 +539,7 @@ def run_check_in_requests(
 				user_info_after = _request_with_retry(get_user_info, client, headers, user_info_url)
 				return success, user_info_before, user_info_after
 
-			# 自动奖励型 provider（如 agentrouter）：每日奖励在"登录"时发放
+			# 自动奖励型 provider（如 agentrouter）：每天第一次登录发放奖励
 			if account.has_api_login_credentials():
 				login_status = _request_with_retry(
 					api_login,
@@ -557,7 +554,8 @@ def run_check_in_requests(
 					error = user_info_after.get('error', 'login failed') if user_info_after else 'login failed'
 					print(f'[FAILED] {account_name}: Login-based check-in failed - {error}')
 					return False, user_info_before, user_info_after
-				# login_status True=本次触发奖励 / False=今日已领过，均视为成功
+				# 登录成功即视为今日签到完成；是否到账看通知里的余额增量
+				# （当天已在别处登录过时增量为 0，属正常）
 				return True, user_info_before, user_info_after
 
 			# 未配置密码：无法触发登录，只能凭余额增量判断奖励是否真的到账
