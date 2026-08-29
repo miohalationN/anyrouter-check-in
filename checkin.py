@@ -93,6 +93,42 @@ def save_checkin_done_date(date_str):
 		print(f'Warning: Failed to save check-in done marker: {e}')
 
 
+# 统一汇总：每日结果写入共享目录，由 /opt/auto-checkin/summary.py 汇总推送一条
+DAILY_RESULT_DIR = '/opt/auto-checkin/daily'
+DAILY_SYSTEM_NAME = 'anyrouter'
+
+
+def load_daily_result_json(date_str: str) -> dict | None:
+	"""读取当天已上报的结果（用于判断失败→成功的恢复补推）"""
+	try:
+		path = os.path.join(DAILY_RESULT_DIR, f'{date_str}_{DAILY_SYSTEM_NAME}.json')
+		if os.path.exists(path):
+			with open(path, 'r', encoding='utf-8') as f:
+				return json.load(f)
+	except Exception:  # nosec B110
+		pass
+	return None
+
+
+def save_daily_result_json(date_str: str, data: dict) -> bool:
+	"""写入当天结果到共享目录；失败返回 False（上层退回原推送兜底）"""
+	try:
+		os.makedirs(DAILY_RESULT_DIR, exist_ok=True)
+		path = os.path.join(DAILY_RESULT_DIR, f'{date_str}_{DAILY_SYSTEM_NAME}.json')
+		with open(path, 'w', encoding='utf-8') as f:
+			json.dump(data, f, ensure_ascii=False, indent=2)
+		print(f'[INFO] Daily result saved: {path}')
+		return True
+	except Exception as e:
+		print(f'[WARN] Failed to save daily result: {e}')
+		return False
+
+
+def summary_already_sent(date_str: str) -> bool:
+	"""当日汇总是否已由 summary.py 推送（存在 flag 文件）"""
+	return os.path.exists(os.path.join(DAILY_RESULT_DIR, f'summary_sent_{date_str}.flag'))
+
+
 def generate_balance_hash(balances):
 	"""生成余额数据的hash"""
 	simple_balances = (
@@ -810,18 +846,65 @@ async def main():
 			+ '<br><br>━━━━━━━━━━━<br><br>'.join(blocks)
 			+ f'<br><br>📊 <b>{stats_html}</b>'
 		)
-		screenshot_paths = take_pending_screenshots() if is_debug_enabled() else []
-		if screenshot_paths:
-			github_run_id = os.getenv('GITHUB_RUN_ID', '').strip()
-			github_repo = os.getenv('GITHUB_REPOSITORY', '').strip()
-			screenshot_hint = f'📷 {len(screenshot_paths)} 张调试截图'
-			if github_run_id and github_repo:
-				run_url = f'https://github.com/{github_repo}/actions/runs/{github_run_id}'
-				screenshot_hint += f'（<a href=\"{run_url}\">查看</a>）'
-			notify_content += f'<br><br>{screenshot_hint}'
-		print(notify_content)
-		notify.push_message('💰 AnyRouter 签到结果', notify_content, msg_type='html')
-		print('[NOTIFY] Check-in result notification sent')
+
+		# 统一汇总：写入当日结果 JSON；成功则不再单独推送（由 summary.py 一条汇总推送）
+		accounts_data = []
+		for i, account in enumerate(accounts):
+			account_key = f'account_{i + 1}'
+			name = account.get_display_name(i)
+			detail = account_check_in_details.get(account_key)
+			if detail and detail.get('success'):
+				accounts_data.append(
+					{
+						'name': name,
+						'success': True,
+						'before_quota': detail.get('before_quota'),
+						'before_used': detail.get('before_used'),
+						'after_quota': detail.get('after_quota'),
+						'after_used': detail.get('after_used'),
+						'reward': detail.get('check_in_reward'),
+						'checkin_log': detail.get('checkin_log'),
+					}
+				)
+			else:
+				accounts_data.append({'name': name, 'success': False, 'error': '异常' if detail is None else '未通过验证'})
+
+		daily_payload = {
+			'date': today_str,
+			'system': DAILY_SYSTEM_NAME,
+			'updated_at': time_str,
+			'success_count': success_count,
+			'total_count': total_count,
+			'all_ok': success_count == total_count,
+			'accounts': accounts_data,
+		}
+		prev_result = load_daily_result_json(today_str)
+		if save_daily_result_json(today_str, daily_payload):
+			print('[NOTIFY] Daily result recorded; individual push suppressed (summary.py pushes)')
+			# 恢复补推：凌晨失败、当日汇总已发，本次重试成功则补推一条
+			if (
+				prev_result is not None
+				and not prev_result.get('all_ok', False)
+				and daily_payload['all_ok']
+				and summary_already_sent(today_str)
+			):
+				recovery_content = '✅ <b>AnyRouter 补签成功</b><br>' + f'<i>{time_str}</i><br><br>' + '<br><br>━━━━━━━━━━━<br><br>'.join(blocks)
+				notify.push_message('✅ AnyRouter 补签成功', recovery_content, msg_type='html')
+				print('[NOTIFY] Recovery push sent (fail -> success after summary)')
+		else:
+			# 写入失败兜底：退回原推送，保证通知不丢
+			screenshot_paths = take_pending_screenshots() if is_debug_enabled() else []
+			if screenshot_paths:
+				github_run_id = os.getenv('GITHUB_RUN_ID', '').strip()
+				github_repo = os.getenv('GITHUB_REPOSITORY', '').strip()
+				screenshot_hint = f'📷 {len(screenshot_paths)} 张调试截图'
+				if github_run_id and github_repo:
+					run_url = f'https://github.com/{github_repo}/actions/runs/{github_run_id}'
+					screenshot_hint += f'（<a href=\"{run_url}\">查看</a>）'
+				notify_content += f'<br><br>{screenshot_hint}'
+			print(notify_content)
+			notify.push_message('💰 AnyRouter 签到结果', notify_content, msg_type='html')
+			print('[NOTIFY] Check-in result notification sent (fallback: daily result write failed)')
 	else:
 		print('[INFO] All accounts successful and no balance changes detected, notification skipped')
 
